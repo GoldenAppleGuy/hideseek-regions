@@ -1,0 +1,82 @@
+name: Region packs
+
+# Rebuilds region packs for the whole world from fresh Geofabrik extracts once a month and
+# publishes them as a release. The app reads index.json from the latest release.
+# Run it by hand with "only" set to a few region IDs (such as us-washington) to test.
+on:
+  schedule:
+    - cron: "17 6 3 * *"
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated region IDs to build (empty for all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      batches: ${{ steps.plan.outputs.batches }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: |
+          if [ -n "${{ inputs.only }}" ]; then
+            echo "batches=$(python3 build_all.py plan 200 --only '${{ inputs.only }}')" >> "$GITHUB_OUTPUT"
+          else
+            echo "batches=$(python3 build_all.py plan 200)" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      # Gentle on Geofabrik's servers.
+      max-parallel: 12
+      matrix:
+        batch: ${{ fromJSON(needs.plan.outputs.batches) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
+          pip install osmium==4.3.1
+      - run: python build_all.py build out "${{ matrix.batch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packs-${{ strategy.job-index }}
+          path: out/
+          retention-days: 2
+
+  publish:
+    needs: build
+    # Publish what built, even if a few regions failed.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: regions-${{ github.run_number }}
+        run: |
+          python3 build_all.py index out "https://github.com/${{ github.repository }}/releases/download/$TAG"
+          gh release create "$TAG" --latest --title "Region packs $(date -u +%Y-%m-%d)" \
+            --notes "Map data © OpenStreetMap contributors, ODbL 1.0. Built from Geofabrik extracts."
+          # Uploaded in groups; a release holds up to 1000 files.
+          ls out/*.hspack | xargs -n 50 gh release upload "$TAG"
+          gh release upload "$TAG" out/index.json
+          # Keep the two newest releases.
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^regions-' | tail -n +3 | \
+            xargs -r -I{} gh release delete {} --yes --cleanup-tag
