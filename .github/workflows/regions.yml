@@ -23,6 +23,7 @@ jobs:
       batches: ${{ steps.plan.outputs.batches }}
     steps:
       - uses: actions/checkout@v4
+      - run: pip install shapely==2.0.7
       - id: plan
         run: |
           if [ -n "${{ inputs.only }}" ]; then
@@ -48,7 +49,7 @@ jobs:
           python-version: "3.12"
       - run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
-          pip install osmium==4.3.1
+          pip install osmium==4.3.1 shapely==2.0.7
       - run: python build_all.py build out "${{ matrix.batch }}"
       - uses: actions/upload-artifact@v4
         with:

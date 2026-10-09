@@ -17,7 +17,7 @@ import sys
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-INDEX = "https://download.geofabrik.de/index-v1-nogeom.json"
+INDEX = "https://download.geofabrik.de/index-v1.json"
 AGENT = {"User-Agent": "hideseek-regions (+https://github.com/GoldenAppleGuy/hideseek-regions)"}
 
 
@@ -26,9 +26,35 @@ def get(url):
         return response.read()
 
 
+# Combined extracts that only partly overlap the regions inside them, so the test below misses them.
+COMBINED = {"alps"}
+
+
+def combined(raw, leaves):
+    """Leaf regions that are mostly made of other leaf regions, such as "dach" (Germany,
+    Austria and Switzerland) or "us-south". Building them would duplicate those regions."""
+    from shapely.geometry import shape
+    from shapely.ops import unary_union
+    from shapely.strtree import STRtree
+    shapes = {f["properties"]["id"]: shape(f["geometry"]).buffer(0)
+              for f in raw if f["properties"]["id"] in leaves and f.get("geometry")}
+    ids = list(shapes)
+    geoms = [shapes[i] for i in ids]
+    tree = STRtree(geoms)
+    found = set(COMBINED)
+    for a in ids:
+        outer = shapes[a]
+        inner = [geoms[j] for j in tree.query(outer)
+                 if ids[j] != a and geoms[j].area < outer.area and outer.intersection(geoms[j]).area > 0.8 * geoms[j].area]
+        if inner and outer.intersection(unary_union(inner)).area > 0.5 * outer.area:
+            found.add(a)
+    return found
+
+
 def regions():
     """Geofabrik's leaf regions, with a readable group such as "North America › United States"."""
-    features = [f["properties"] for f in json.loads(get(INDEX))["features"]]
+    raw = json.loads(get(INDEX))["features"]
+    features = [f["properties"] for f in raw]
     for p in features:
         # Some regions, such as US states ("us/new-york"), are named by slug and filed under
         # the continent; the part before the slash is their real parent.
@@ -38,9 +64,11 @@ def regions():
                 p["name"] = p["id"].split("/")[1].replace("-", " ").title()
     by_id = {p["id"]: p for p in features}
     parents = {p.get("parent") for p in features}
+    leaves = {p["id"] for p in features if p["id"] not in parents and "pbf" in p.get("urls", {})}
+    skip = combined(raw, leaves)
     result = []
     for p in features:
-        if p["id"] in parents or "pbf" not in p.get("urls", {}):
+        if p["id"] not in leaves or p["id"] in skip:
             continue
         chain, parent = [], p.get("parent")
         while parent in by_id:
