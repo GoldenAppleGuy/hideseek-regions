@@ -26,6 +26,10 @@ def get(url):
         return response.read()
 
 
+# Regions to build: these continents, or any region under these countries.
+CONTINENTS = {"Europe", "North America"}
+COUNTRIES = {"japan", "australia", "new-zealand"}
+
 # Combined extracts that only partly overlap the regions inside them, so the test below misses them.
 COMBINED = {"alps"}
 
@@ -70,10 +74,13 @@ def regions():
     for p in features:
         if p["id"] not in leaves or p["id"] in skip:
             continue
-        chain, parent = [], p.get("parent")
+        chain, ancestors, parent = [], {p["id"]}, p.get("parent")
         while parent in by_id:
             chain.insert(0, by_id[parent]["name"])
+            ancestors.add(parent)
             parent = by_id[parent].get("parent")
+        if not (chain and chain[0] in CONTINENTS) and not (ancestors & COUNTRIES):
+            continue
         pbf = p["urls"]["pbf"]
         result.append({"id": p["id"].replace("/", "-"), "name": p["name"], "group": " › ".join(chain) or None,
                        "pbf": pbf, "poly": pbf.replace("-latest.osm.pbf", ".poly")})
